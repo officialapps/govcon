@@ -1,0 +1,16 @@
+.env
+future_suggestions
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Node
+node_modules/
+
+# Others
+.env
+.DS_Store
+

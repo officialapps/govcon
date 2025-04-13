@@ -1,0 +1,94 @@
+from fastapi import FastAPI, UploadFile, File, Form
+from sqlalchemy.future import select
+from db import engine, SessionLocal
+from models import Base, RFP
+import shutil
+from pathlib import Path
+
+app = FastAPI()
+
+# Create DB tables on startup
+@app.on_event("startup")
+async def startup():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+# Upload directory
+UPLOAD_DIR = Path(__file__).resolve().parent / "uploads"
+UPLOAD_DIR.mkdir(exist_ok=True)
+
+# Upload RFP endpoint
+@app.post("/upload-rfp")
+async def upload_rfp(
+    title: str = Form(...),
+    file: UploadFile = File(...)
+):
+    file_location = UPLOAD_DIR / file.filename
+
+    with open(file_location, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    async with SessionLocal() as session:
+        new_rfp = RFP(title=title, filename=file.filename)
+        session.add(new_rfp)
+        await session.commit()
+
+    return {"message": f"RFP '{title}' uploaded successfully."}
+
+# List all uploaded RFPs
+@app.get("/rfps")
+async def get_rfps():
+    async with SessionLocal() as session:
+        result = await session.execute(select(RFP))
+        rfps = result.scalars().all()
+        return rfps
+
+
+from fastapi import HTTPException
+import pdfplumber
+import openai
+import os
+
+openai.api_key = os.getenv("OPENAI_API_KEY")
+
+@app.post("/generate-draft/{rfp_id}")
+async def generate_draft(rfp_id: int):
+    # Fetch RFP metadata
+    async with SessionLocal() as session:
+        rfp = await session.get(RFP, rfp_id)
+        if not rfp:
+            raise HTTPException(status_code=404, detail="RFP not found")
+
+    # Read the uploaded PDF file
+    pdf_path = UPLOAD_DIR / rfp.filename
+    if not pdf_path.exists():
+        raise HTTPException(status_code=404, detail="RFP file not found on disk")
+
+    with pdfplumber.open(pdf_path) as pdf:
+        full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+
+    # Call OpenAI to generate draft
+    prompt = f"""You are a government proposal writer. Based on the RFP text below, generate a high-level executive summary or introduction for a proposal.
+
+RFP TEXT:
+{full_text[:4000]}  # truncate if needed
+"""
+
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a proposal writer."},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        draft_text = response['choices'][0]['message']['content']
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {
+        "rfp_id": rfp_id,
+        "title": rfp.title,
+        "draft": draft_text
+    }
+

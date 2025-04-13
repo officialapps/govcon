@@ -1,0 +1,15 @@
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import Column, Integer, String, Text, Table, MetaData
+
+Base = declarative_base()
+metadata = MetaData()
+
+class RFP(Base):
+    __tablename__ = "rfps"
+    __table_args__ = {'extend_existing': True}  # ✅ Fix here
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String)
+    filename = Column(String)
+    draft_text = Column(Text)  # newly added field
+

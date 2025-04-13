@@ -1,0 +1,45 @@
+# main.py
+from fastapi import FastAPI
+from db import engine, SessionLocal
+from models import Base, RFP
+from sqlalchemy.future import select
+
+app = FastAPI()
+
+# Create tables on startup
+@app.on_event("startup")
+async def startup():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+@app.get("/rfps")
+async def get_rfps():
+    async with SessionLocal() as session:
+        result = await session.execute(select(RFP))
+        rfps = result.scalars().all()
+        return rfps
+
+from fastapi import UploadFile, File
+import shutil
+import os
+from pathlib import Path
+from models import RFP
+from db import SessionLocal
+
+UPLOAD_DIR = Path(__file__).resolve().parent / "uploads"
+UPLOAD_DIR.mkdir(exist_ok=True)
+
+@app.post("/upload-rfp")
+async def upload_rfp(title: str, file: UploadFile = File(...)):
+    file_location = UPLOAD_DIR / file.filename
+
+    with open(file_location, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    async with SessionLocal() as session:
+        new_rfp = RFP(title=title, filename=file.filename)
+        session.add(new_rfp)
+        await session.commit()
+
+    return {"message": f"RFP '{title}' uploaded successfully."}
+

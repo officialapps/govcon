@@ -1,0 +1,142 @@
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from sqlalchemy.future import select
+from db import engine, SessionLocal
+from models import Base, RFP
+import shutil
+from pathlib import Path
+import pdfplumber
+import os
+from openai import OpenAI
+
+# Load OpenAI API key
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+app = FastAPI()
+
+# Folder to store uploaded files
+UPLOAD_DIR = Path(__file__).resolve().parent / "uploads"
+UPLOAD_DIR.mkdir(exist_ok=True)
+
+# Create database tables on startup
+@app.on_event("startup")
+async def startup():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+# Upload RFP file
+@app.post("/upload-rfp")
+async def upload_rfp(
+    title: str = Form(...),
+    file: UploadFile = File(...)
+):
+    file_location = UPLOAD_DIR / file.filename
+
+    with open(file_location, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    async with SessionLocal() as session:
+        new_rfp = RFP(title=title, filename=file.filename)
+        session.add(new_rfp)
+        await session.commit()
+
+    return {"message": f"RFP '{title}' uploaded successfully."}
+
+# Get list of uploaded RFPs
+@app.get("/rfps")
+async def get_rfps():
+    async with SessionLocal() as session:
+        result = await session.execute(select(RFP))
+        rfps = result.scalars().all()
+        return rfps
+
+# Generate draft proposal using OpenAI
+@app.post("/generate-draft/{rfp_id}")
+async def generate_draft(rfp_id: int):
+    async with SessionLocal() as session:
+        rfp = await session.get(RFP, rfp_id)
+        if not rfp:
+            raise HTTPException(status_code=404, detail="RFP not found")
+
+    pdf_path = UPLOAD_DIR / rfp.filename
+    if not pdf_path.exists():
+        raise HTTPException(status_code=404, detail="RFP file not found")
+
+    with pdfplumber.open(pdf_path) as pdf:
+        full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+
+    prompt = f"""You are a government proposal writer. Based on the RFP text below, generate a high-level executive summary or introduction for a proposal.
+
+RFP TEXT:
+{full_text[:4000]}"""
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a proposal writer."},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        draft_text = response.choices[0].message.content
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    async with SessionLocal() as session:
+        rfp = await session.get(RFP, rfp_id)
+        rfp.draft_text = draft_text
+        await session.commit()
+
+    return {
+        "rfp_id": rfp_id,
+        "title": rfp.title,
+        "draft": draft_text
+    }
+
+
+@app.get("/rfp/{rfp_id}")
+async def get_rfp(rfp_id: int):
+    async with SessionLocal() as session:
+        rfp = await session.get(RFP, rfp_id)
+        if not rfp:
+            raise HTTPException(status_code=404, detail="RFP not found")
+        return rfp
+
+{
+  "id": 1,
+  "title": "Sample Contract",
+  "filename": "Traffic Jam RFQ_Final.pdf",
+  "draft_text": "Your generated proposal draft here..."
+}
+
+from pydantic import BaseModel
+
+class RFPUpdate(BaseModel):
+    draft_text: str
+
+@app.put("/rfp/{rfp_id}")
+async def update_rfp(rfp_id: int, update: RFPUpdate):
+    async with SessionLocal() as session:
+        rfp = await session.get(RFP, rfp_id)
+        if not rfp:
+            raise HTTPException(status_code=404, detail="RFP not found")
+
+        rfp.draft_text = update.draft_text
+        await session.commit()
+
+    return {"message": "Draft updated successfully", "rfp_id": rfp_id}
+
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI()
+
+# Add this AFTER app is created
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://govcon.taptasky.com"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+

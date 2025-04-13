@@ -1,0 +1,51 @@
+// pages/rfps/index.tsx
+import { useEffect, useState } from 'react'
+import Link from 'next/link'
+import API from '../../lib/api'
+import { useRouter } from 'next/router'
+
+type RFP = {
+  id: number
+  title: string
+}
+
+export default function RFPList() {
+  const [rfps, setRfps] = useState<RFP[]>([])
+  const router = useRouter()
+
+  useEffect(() => {
+    const token = localStorage.getItem('token')
+    if (!token) {
+      router.push('/login')
+      return
+    }
+
+    API.get('/rfps')
+      .then((res) => setRfps(res.data))
+      .catch((err) => {
+        console.error('Failed to load RFPs:', err)
+        alert('Failed to load RFPs.')
+      })
+  }, [router])
+
+  return (
+    <main style={{ padding: '2rem' }}>
+      <h1>Uploaded RFPs</h1>
+      <p>
+        <Link href="/upload">📤 Upload New RFP</Link>
+      </p>
+      <ul style={{ marginTop: '1rem' }}>
+        {rfps.length === 0 ? (
+          <li>No RFPs found.</li>
+        ) : (
+          rfps.map((rfp) => (
+            <li key={rfp.id}>
+              <Link href={`/rfps/${rfp.id}`}>{rfp.title}</Link>
+            </li>
+          ))
+        )}
+      </ul>
+    </main>
+  )
+}
+
